@@ -1,0 +1,102 @@
+services:
+  api-gateway:
+    build:
+      context: ./server/api-gateway
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - CONVERSION_SERVICE_URL=http://conversion-service:3001
+      - STORAGE_SERVICE_URL=http://storage-service:3002
+    depends_on:
+      - conversion-service
+      - storage-service
+    networks:
+      - microservices-network
+
+  conversion-service:
+    build:
+      context: ./server/conversion-service
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+      - MONGO_URL=mongodb://mongo:27017/pdf_converter
+      - STORAGE_SERVICE_URL=http://storage-service:3002
+    depends_on:
+      - redis
+      - mongo
+      - storage-service
+    networks:
+      - microservices-network
+
+  storage-service:
+    build:
+      context: ./server/storage-service
+      dockerfile: Dockerfile
+    ports:
+      - "3002:3002"
+    environment:
+      - NODE_ENV=production
+      - MONGO_URL=mongodb://mongo:27017/pdf_storage
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION}
+      - S3_BUCKET=${S3_BUCKET}
+    depends_on:
+      - mongo
+    networks:
+      - microservices-network
+
+  test-runner:
+    build:
+      context: ./server/test-runner
+      dockerfile: Dockerfile
+    environment:
+      - API_URL=http://api-gateway:3000
+    depends_on:
+      - api-gateway
+    networks:
+      - microservices-network
+
+  frontend:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://api-gateway:3000
+    depends_on:
+      - api-gateway
+    networks:
+      - microservices-network
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - microservices-network
+
+  mongo:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - microservices-network
+
+networks:
+  microservices-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  mongo_data:
