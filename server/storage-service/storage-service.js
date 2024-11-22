@@ -1,88 +1,86 @@
+// storage-service/src/index.js
 const express = require("express");
-const AWS = require("aws-sdk");
+const multer = require("multer");
+const {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+} = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const mongoose = require("mongoose");
 const crypto = require("crypto");
 
 const app = express();
-const port = 3002;
+const PORT = process.env.PORT || 3002;
+const upload = multer({ storage: multer.memoryStorage() });
 
-app.use(express.json());
+// MongoDB connection
+mongoose.connect(process.env.MONGODB_URI);
 
-mongoose.connect(process.env.MONGO_URL, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-});
-
-const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION,
-});
-
+// File Schema
 const FileSchema = new mongoose.Schema({
-  fileName: String,
+  fileId: String,
   s3Key: String,
-  isPasswordProtected: Boolean,
+  password: String,
+  downloadCount: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now },
 });
 
 const File = mongoose.model("File", FileSchema);
 
-app.post("/store", async (req, res) => {
+// S3 Client configuration
+const s3Client = new S3Client({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+});
+
+app.post("/upload", upload.single("file"), async (req, res) => {
   try {
-    const { file, fileName } = req.body;
-    if (!file || !fileName) {
-      return res.status(400).json({ error: "Invalid request data" });
+    const { fileId, password } = req.body;
+    const file = req.file;
+
+    if (!file) {
+      return res.status(400).json({ error: "No file provided" });
     }
 
-    const s3Key = `${crypto.randomBytes(8).toString("hex")}/${fileName}`;
+    // Generate unique S3 key
+    const s3Key = `${Date.now()}-${crypto.randomBytes(8).toString("hex")}.pdf`;
 
     // Upload to S3
-    await s3
-      .upload({
-        Bucket: process.env.S3_BUCKET,
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: process.env.AWS_BUCKET_NAME,
         Key: s3Key,
-        Body: Buffer.from(file, "base64"), // Decode base64 file data
+        Body: file.buffer,
         ContentType: "application/pdf",
       })
-      .promise();
+    );
 
-    // Save metadata to MongoDB
-    await File.create({
-      fileName,
-      s3Key,
-      isPasswordProtected: false,
+    // Create signed URL (valid for 1 hour)
+    const command = new GetObjectCommand({
+      Bucket: process.env.AWS_BUCKET_NAME,
+      Key: s3Key,
     });
+    const url = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
 
-    const s3Url = `https://${process.env.S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${s3Key}`;
-    res.json({ success: true, fileName, s3Url });
+    // Save file metadata
+    const fileDoc = new File({
+      fileId,
+      s3Key,
+      password,
+    });
+    await fileDoc.save();
+
+    res.json({ url });
   } catch (error) {
     console.error("Storage error:", error);
-    res.status(500).json({ error: "Storage failed" });
+    res.status(500).json({ error: "Storage operation failed" });
   }
 });
 
-app.get("/download/:fileName", async (req, res) => {
-  try {
-    const file = await File.findOne({ fileName: req.params.fileName });
-    if (!file) {
-      return res.status(404).json({ error: "File not found" });
-    }
-
-    const s3Object = await s3
-      .getObject({
-        Bucket: process.env.S3_BUCKET,
-        Key: file.s3Key,
-      })
-      .promise();
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.send(s3Object.Body);
-  } catch (error) {
-    res.status(500).json({ error: "Download failed" });
-  }
-});
-
-app.listen(port, () => {
-  console.log(`Storage service running on port ${port}`);
+app.listen(PORT, () => {
+  console.log(`Storage service running on port ${PORT}`);
 });

@@ -38,7 +38,7 @@ function Home() {
 
       setSelectedFile(file);
       setMessage({ type: "", text: "" });
-      setDownloadLink(""); // Reset download link
+      setDownloadLink("");
     }
   }, []);
 
@@ -52,45 +52,69 @@ function Home() {
 
     const formData = new FormData();
     formData.append("file", selectedFile);
-    formData.append("password", password);
+    
+    if (password.trim()) {
+      formData.append("password", password);
+    }
 
     try {
       setIsLoading(true);
       setMessage({ type: "", text: "" });
-      setDownloadLink(""); // Reset download link
+      setDownloadLink("");
 
-      const apiUrl = import.meta.env.VITE_API_URL || 'http://api-gateway:3000';
+      // Log the request details
+      console.log('Preparing to send file:', {
+        name: selectedFile.name,
+        type: selectedFile.type,
+        size: selectedFile.size
+      });
+
+      const config = {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        onUploadProgress: (progressEvent) => {
+          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          console.log(`Upload Progress: ${percentCompleted}%`);
+        },
+      };
+
       const response = await axios.post(
-        `${apiUrl}/convert`, 
+        'http://localhost:3000/convert',
         formData,
-        { 
-          responseType: "json",
-          headers: { 'Content-Type': 'multipart/form-data' }
-        }
+        config
       );
 
-      if (response.data.storageURL) {
-        // Set the download link directly from the response
-        setDownloadLink(response.data.storageURL);
+      console.log('Server response:', response.data);
+
+      if (response.data.storageUrl) {
+        setDownloadLink(response.data.storageUrl);
         setMessage({ type: "success", text: "File Converted Successfully!" });
+      } else {
+        throw new Error('No storage URL in response');
       }
     } catch (error) {
-      console.error('Conversion error:', error);
+      console.error('Error details:', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status
+      });
+
       let errorMessage = "An unexpected error occurred. Please try again.";
+      
       if (axios.isAxiosError(error)) {
-        errorMessage = error.response?.data?.error || errorMessage;
+        if (error.response) {
+          errorMessage = error.response.data?.error || `Server error (${error.response.status})`;
+        } else if (error.request) {
+          errorMessage = "No response from server. Please check your connection.";
+        }
       }
+      
       setMessage({ type: "error", text: errorMessage });
     } finally {
       setIsLoading(false);
     }
   }, [selectedFile, password]);
-
-  const handleDownload = () => {
-    if (downloadLink) {
-      window.open(downloadLink, '_blank');
-    }
-  };
 
   return (
     <div className="max-w-screen-2xl mx-auto container px-6 py-3 md:px-40">
@@ -100,14 +124,13 @@ function Home() {
             Convert Word to PDF Online
           </h1>
           <p className="text-sm text-center mb-5">
-            Easily convert Word documents to PDF format online, without having
-            to install any software.
+            Easily convert Word documents to PDF format online
           </p>
 
           <div className="flex flex-col items-center space-y-4">
             <input
               type="file"
-              accept=".doc,.docx"
+              accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
               onChange={handleFileChange}
               className="hidden"
               id="FileInput"
@@ -146,7 +169,7 @@ function Home() {
                 
                 {downloadLink && (
                   <button
-                    onClick={handleDownload}
+                    onClick={() => window.open(downloadLink, '_blank')}
                     className="text-white bg-green-500 hover:bg-green-700 duration-300 font-bold px-4 py-2 rounded-lg"
                   >
                     Download PDF

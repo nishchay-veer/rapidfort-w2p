@@ -1,91 +1,169 @@
 const express = require("express");
 const multer = require("multer");
-const docxToPDF = require("docx-pdf");
-const PDFDocument = require("pdf-lib").PDFDocument;
-const crypto = require("crypto");
+const libre = require("libreoffice-convert");
+const { promisify } = require("util");
+const fs = require("fs");
+const path = require("path");
 const axios = require("axios");
-const Bull = require("bull");
+const mongoose = require("mongoose");
+const { v4: uuidv4 } = require("uuid");
+const FormData = require("form-data");
 
 const app = express();
-const port = 3001;
+const PORT = process.env.PORT || 3001;
+const upload = multer({ dest: "uploads/" });
+const convertAsync = promisify(libre.convert);
 
-const conversionQueue = new Bull("pdf-conversion", process.env.REDIS_URL);
-
-const storage = multer.memoryStorage();
-const upload = multer({ storage });
-
-async function addPasswordToPDF(pdfBuffer, password) {
-  const pdfDoc = await PDFDocument.load(pdfBuffer);
-  const encryptedPdf = await pdfDoc.save({
-    password,
-    permissions: {
-      printing: "highResolution",
-      modifying: false,
-      copying: false,
-      annotating: false,
-      fillingForms: true,
-      contentAccessibility: true,
-      documentAssembly: false,
-    },
-  });
-  return encryptedPdf;
+// Ensure uploads directory exists
+if (!fs.existsSync("uploads")) {
+  fs.mkdirSync("uploads");
 }
 
-conversionQueue.process(async (job) => {
-  const { file, password } = job.data;
+// MongoDB connection with error handling
+mongoose
+  .connect(process.env.MONGODB_URI)
+  .then(() => console.log("Connected to MongoDB"))
+  .catch((err) => console.error("MongoDB connection error:", err));
 
-  const pdfBuffer = await new Promise((resolve, reject) => {
-    docxToPDF(file, (err, buffer) => {
-      if (err) reject(err);
-      else resolve(buffer);
-    });
-  });
-
-  const finalPdf = password
-    ? await addPasswordToPDF(pdfBuffer, password)
-    : pdfBuffer;
-
-  const fileName = `${crypto.randomBytes(16).toString("hex")}.pdf`;
-  await axios.post(`${process.env.STORAGE_SERVICE_URL}/store`, {
-    file: finalPdf,
-    fileName,
-  });
-
-  return { fileName };
+// Document Schema
+const DocumentSchema = new mongoose.Schema({
+  originalName: String,
+  fileId: String,
+  convertedUrl: String,
+  status: String,
+  createdAt: { type: Date, default: Date.now },
+  password: String,
 });
 
+const Document = mongoose.model("Document", DocumentSchema);
+
+// Helper function to clean up files
+const cleanupFiles = async (...filePaths) => {
+  for (const filePath of filePaths) {
+    try {
+      if (filePath && fs.existsSync(filePath)) {
+        await fs.promises.unlink(filePath);
+      }
+    } catch (error) {
+      console.error(`Error cleaning up file ${filePath}:`, error);
+    }
+  }
+};
+
 app.post("/convert", upload.single("file"), async (req, res) => {
+  const inputPath = req.file?.path;
+  const fileId = uuidv4();
+  const outputPath = path.join("uploads", `${fileId}.pdf`);
+
   try {
-    const password = req.body.password || null;
     if (!req.file) {
-      return res.status(400).json({
-        message: "No file uploaded",
-      });
+      return res.status(400).json({ error: "No file provided" });
     }
 
-    // Add job to the queue
-    const job = await conversionQueue.add({
-      file: req.file.buffer,
-      password,
+    // Create document record first
+    const doc = new Document({
+      originalName: req.file.originalname,
+      fileId,
+      status: "processing",
+      password: req.body.password,
     });
+    await doc.save();
 
-    // Wait for the job to finish
-    const result = await job.finished();
+    // Read input file
+    const docxBuf = await fs.promises.readFile(inputPath);
 
-    // Generate a direct S3 URL for download
-    const s3Url = `https://${process.env.S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${result.fileName}`;
+    // Convert to PDF
+    console.log("Starting conversion to PDF...");
+    const pdfBuf = await convertAsync(docxBuf, ".pdf", undefined);
+    await fs.promises.writeFile(outputPath, pdfBuf);
+    console.log("PDF conversion completed");
+
+    // Update status to uploading
+    doc.status = "uploading";
+    await doc.save();
+
+    // Prepare form data for storage service
+    const formData = new FormData();
+    formData.append("file", fs.createReadStream(outputPath));
+    formData.append("fileId", fileId);
+    if (req.body.password) {
+      formData.append("password", req.body.password);
+    }
+
+    // Get form data headers safely
+    const formDataHeaders = formData.getHeaders ? formData.getHeaders() : {};
+    const headers = {
+      ...formDataHeaders,
+      "Content-Type": `multipart/form-data; boundary=${formData.getBoundary()}`,
+      ...(formData.getCustomHeaders?.() || {}),
+    };
+
+    // Upload to storage service
+    console.log("Uploading to storage service...");
+    const storageResponse = await axios.post(
+      `${process.env.STORAGE_SERVICE_URL}/upload`,
+      formData,
+      { headers }
+    );
+
+    // Update document record with success
+    doc.convertedUrl = storageResponse.data.url;
+    doc.status = "completed";
+    await doc.save();
+
+    // Clean up files
+    await cleanupFiles(inputPath, outputPath);
 
     res.json({
-      success: true,
-      fileName: result.fileName,
-      storageURL: s3Url,
+      message: "Conversion successful",
+      fileId: fileId,
+      storageUrl: storageResponse.data.url,
     });
   } catch (error) {
     console.error("Conversion error:", error);
-    res.status(500).json({ error: "Conversion or storage failed" });
+
+    // Update document status to failed
+    if (fileId) {
+      try {
+        await Document.findOneAndUpdate({ fileId }, { status: "failed" });
+      } catch (dbError) {
+        console.error("Error updating document status:", dbError);
+      }
+    }
+
+    // Clean up files in case of error
+    await cleanupFiles(inputPath, outputPath);
+
+    // Send appropriate error response
+    if (axios.isAxiosError(error)) {
+      const statusCode = error.response?.status || 500;
+      const errorMessage =
+        error.response?.data?.error || "Storage service error";
+      res.status(statusCode).json({ error: errorMessage });
+    } else {
+      res.status(500).json({
+        error: "Conversion failed",
+        details: error.message,
+      });
+    }
   }
 });
 
-app.listen(port, () => {
-  console.log(`Conversion service running on port ${port}`);
+// Health check endpoint
+app.get("/health", (req, res) => {
+  res.json({
+    status: "OK",
+    mongodb:
+      mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+  });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error("Unhandled error:", err);
+  res.status(500).json({ error: "Internal server error" });
+});
+
+app.listen(PORT, () => {
+  console.log(`Conversion service running on port ${PORT}`);
 });
