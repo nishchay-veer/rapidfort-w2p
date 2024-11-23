@@ -1,26 +1,14 @@
-# Install Ingress Controller
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: ingress-nginx
----
-# Ingress Class
-apiVersion: networking.k8s.io/v1
-kind: IngressClass
-metadata:
-  name: nginx
-spec:
-  controller: k8s.io/ingress-nginx
----
+
 # Ingress Resource
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: word-to-pdf-ingress
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
 spec:
-  ingressClassName: nginx
   rules:
   - http:
       paths:
