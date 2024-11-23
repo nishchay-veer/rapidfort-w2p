@@ -33,7 +33,7 @@ data:
   MONGODB_URI: "mongodb://mongodb:27017/wordtopdf"
   CONVERSION_SERVICE_URL: "http://conversion-service:3001"
   STORAGE_SERVICE_URL: "http://storage-service:3002"
-  VITE_API_URL: "http://api-gateway:3000"
+  VITE_API_URL: "http://192.168.49.2:3000"
 EOF
 
 # Apply the configurations

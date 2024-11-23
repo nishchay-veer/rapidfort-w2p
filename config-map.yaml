@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  AWS_REGION: "eu-north-1"
+  AWS_BUCKET_NAME: "rf-nish-files"
+  MONGODB_URI: "mongodb://mongodb:27017/wordtopdf"
+  CONVERSION_SERVICE_URL: "http://conversion-service:3001"
+  STORAGE_SERVICE_URL: "http://storage-service:3002"
+  VITE_API_URL: "http://api-gateway:3000"
