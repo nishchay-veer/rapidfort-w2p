@@ -3,6 +3,8 @@
 ## Overview
 This repository contains a Word-to-PDF converter application built using a microservices architecture. The application allows users to upload Word documents, optionally password-protect the generated PDFs, and download the converted files. The architecture ensures scalability, modularity, and ease of deployment using Kubernetes.
 
+![Home page](rapid-1-1.png)
+
 ### Features
 - Upload Word documents for conversion to PDF.
 - Optionally add password protection to generated PDFs.
